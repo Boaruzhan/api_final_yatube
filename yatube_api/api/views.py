@@ -1,48 +1,46 @@
-from .serializers import (PostSerializer,
-                          CommentSerializer,
-                          GroupSerializer,
-                          FollowSerializer)
-from posts.models import Group, Post, Follow
 from django.shortcuts import get_object_or_404
-from rest_framework import viewsets, status, filters
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from posts.models import Group, Post, User
+from rest_framework import filters, mixins, viewsets
 from rest_framework.pagination import LimitOffsetPagination
-from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.permissions import (IsAuthenticated,
+                                        IsAuthenticatedOrReadOnly)
+
 from .permissions import IsPostAuthor
+from .serializers import (CommentSerializer, FollowSerializer, GroupSerializer,
+                          PostSerializer)
 
 
-class GroupViewSet(viewsets.ModelViewSet):
+class GroupViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Group.objects.all()
     serializer_class = GroupSerializer
-    permission_classes = [IsPostAuthor]
-
-    def create(self, request):
-        return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
+    permission_classes = (IsPostAuthor,)
 
 
 class PostViewSet(viewsets.ModelViewSet):
     queryset = Post.objects.all()
     serializer_class = PostSerializer
+    permission_classes = (
+        IsAuthenticatedOrReadOnly,
+        IsPostAuthor,
+    )
     pagination_class = LimitOffsetPagination
-    permission_classes = (IsPostAuthor,)
 
     def perform_create(self, serializer):
-        if self.request.user.is_authenticated:
-            serializer.save(author=self.request.user)
-        else:
-            raise AuthenticationFailed('Нужно пройти авторизацию.')
+        serializer.save(author=self.request.user)
 
 
-class FollowViewSet(viewsets.ModelViewSet):
-    queryset = Follow.objects.all()
-    serializer_class = FollowSerializer
+class FollowViewSet(mixins.ListModelMixin,
+                    mixins.CreateModelMixin,
+                    viewsets.GenericViewSet):
+    http_method_names = ['get', 'post']
     permission_classes = (IsAuthenticated,)
-    filter_backends = (filters.SearchFilter,)
-    search_fields = ('following__username',)
+    serializer_class = FollowSerializer
+    filter_backends = [filters.SearchFilter]
+    search_fields = ['user__username', 'following__username']
 
     def get_queryset(self):
-        return self.request.user.follower.all()
+        user = get_object_or_404(User, username=self.request.user.username)
+        return user.follower.all()
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
@@ -50,25 +48,24 @@ class FollowViewSet(viewsets.ModelViewSet):
 
 class CommentViewSet(viewsets.ModelViewSet):
     serializer_class = CommentSerializer
-    permission_classes = (IsPostAuthor,)
+    permission_classes = (
+        IsAuthenticatedOrReadOnly,
+        IsPostAuthor,
+    )
 
     def get_queryset(self):
-        post = get_object_or_404(Post, pk=self.kwargs.get('post_id'))
+        post = get_object_or_404(
+            Post,
+            pk=self.kwargs.get('post_id')
+        )
         return post.comments
 
     def perform_create(self, serializer):
-        post = get_object_or_404(Post, pk=self.kwargs.get('post_id'))
-        if not self.request.user.is_authenticated:
-            raise AuthenticationFailed('Нужно пройти авторизацию.')
-        serializer.save(author=self.request.user, post=post)
-
-    def update(self, request, *args, **kwargs):
-        comment = self.get_object()
-        if comment.author != request.user:
-            return Response(status=status.HTTP_403_FORBIDDEN)
-        serializer = self.get_serializer(comment,
-                                         data=request.data,
-                                         partial=True)
-        serializer.is_valid(raise_exception=True)
-        self.perform_update(serializer)
-        return Response(serializer.data)
+        post = get_object_or_404(
+            Post,
+            pk=self.kwargs.get('post_id')
+        )
+        serializer.save(
+            author=self.request.user,
+            post=post
+        )
